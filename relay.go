@@ -1,33 +1,52 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"time"
+
+	"github.com/grafov/bcast"
 )
 
 // relayStreamToWSClients waits for clients to connect and relays the given stream to
 // connected websocket clients. If a client disconnects, it does no longer receives the stream.
 func relayStreamToWSClients(stream <-chan *[]byte, clients <-chan *wsClient) {
-	connectedClients := make(map[*wsClient]bool)
+	wsGroup := bcast.NewGroup()
+	wsGroup.Broadcast(10 * time.Millisecond)
+
+	// handle incoming clients
 	go func() {
 		for {
 			// wait for clients to connect
-			newClient := <-clients
-			log.Println("Client connected: " + newClient.remoteAddress)
+			client := <-clients
+			log.Println("Client connected: " + client.remoteAddress)
+			subscription := wsGroup.Join()
+
 			// start goroutine to monitor the connection
 			go func() {
-				<-newClient.isClosed
-				delete(connectedClients, newClient)
-				log.Println("Client disconnected: " + newClient.remoteAddress)
+				<-client.isClosed
+				wsGroup.Leave(subscription)
+				log.Println("Client disconnected: " + client.remoteAddress)
 			}()
-			connectedClients[newClient] = true
+
+			// start goroutine to consume broadcast
+			go func() {
+				for {
+					fmt.Println("wait for recv")
+					data := subscription.Recv().(*[]byte)
+					fmt.Println("recv from bc")
+					client.writeStream <- data
+				}
+			}()
 		}
 	}()
+
+	// write stream into broadcast group
 	go func() {
 		for {
 			data := <-stream
-			for client := range connectedClients {
-				client.writeStream <- data
-			}
+			fmt.Println("write to bc")
+			wsGroup.Send(data)
 		}
 	}()
 }
